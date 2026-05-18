@@ -1,0 +1,1831 @@
+<template>
+  <div class="calendar-page">
+    <!-- Основной контент -->
+    <div class="main-content">
+      <!-- Заголовок -->
+      <div class="page-header">
+        <h1>Календарь занятий</h1>
+        <p>Выберите удобное время для записи на занятия</p>
+      </div>
+
+      <!-- Выбор преподавателя (студенты и админы) -->
+      <div v-if="showTeacherPicker" class="teacher-selection">
+        <div class="teacher-selector">
+          <label for="teacher-select">Выберите преподавателя</label>
+          <Dropdown
+            
+            id="teacher-select"
+            v-model="selectedTeacher"
+            :options="teachers"
+            optionLabel="full_name"
+            placeholder="Выберите преподавателя для записи"
+            class="teacher-dropdown"
+            @change="onTeacherChange"
+          />
+          <div v-if="teachersLoading" class="loading-indicator">
+            <i class="pi pi-spin pi-spinner"></i> Загрузка преподавателей...
+          </div>
+          <div v-if="!teachersLoading && teachers.length === 0" class="empty-state">
+            Нет доступных преподавателей
+          </div>
+        </div>
+      </div>
+
+      <!-- Календарь: локальная роль «Учитель», JWT-роль teacher или админ с выбранным преподавателем -->
+      <div v-if="showCalendarGrid" class="calendar-container">
+        <!-- Навигация по месяцам -->
+        <div class="calendar-navigation">
+          <div class="month-selector">
+            <div class="month-nav-row">
+              <Button icon="pi pi-chevron-left" rounded text aria-label="Предыдущий месяц" @click="goToPreviousMonth" />
+              <h2>{{ currentMonthName }} {{ currentYear }}</h2>
+              <Button icon="pi pi-chevron-right" rounded text aria-label="Следующий месяц" @click="goToNextMonth" />
+            </div>
+            <p class="month-subtitle">
+              {{ isTeacher ? 'Управление моим расписанием' : isAdmin ? `Управление расписанием ${selectedTeacher?.full_name}` : `Расписание ${selectedTeacher?.full_name}` }}
+            </p>
+          </div>
+        </div>
+
+        <!-- Сетка календаря -->
+        <div class="calendar-grid">
+          <!-- Заголовки дней недели -->
+          <div class="calendar-header">
+            <div
+              v-for="dayName in dayNames"
+              :key="dayName"
+              class="day-header"
+            >
+              {{ dayName }}
+            </div>
+          </div>
+
+          <!-- Дни месяца -->
+          <div class="calendar-days">
+            <div
+              v-for="day in calendarDays"
+              :key="day.key"
+              class="calendar-day"
+              :class="{
+                'other-month': day.otherMonth,
+                'today': day.isToday,
+                'weekend': day.isWeekend,
+                'work-day': day.isWorkDay,
+                'non-work-day': !day.isWorkDay && !day.otherMonth,
+                'non-work-cursor-day': !day.isWorkDay && day.otherMonth && !isTeacher && !isLocalTeacher && !isAdmin,
+                'has-events': day.hasEvents,
+                'selected': selectedDate && isSameDay(day.date, selectedDate)
+              }"
+              @click="selectDate(day)"
+            >
+              <div class="day-number">{{ day.dayNumber }}</div>
+              <div v-if="day.hasEvents" class="day-events">
+                <div class="event-dot"></div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+
+        <!-- Информация о выбранном дне -->
+        <div v-if="selectedDate" class="selected-day-info">
+          <div class="selected-day-header">
+            <h3>{{ formatSelectedDate(selectedDate) }}</h3>
+            <p class="day-description">{{ getDayDescription(selectedDate) }}</p>
+          </div>
+
+          <!-- Временные слоты для студентов -->
+          <div class="time-slots-section">
+            <h4>Доступное время</h4>
+            <div class="time-slots-grid">
+              <div
+                v-for="slot in availableSlots"
+                :key="slot.time"
+                class="time-slot"
+                :class="slot.status.toLowerCase()"
+                @click="slot.status === 'SCHEDULED' ? bookSlot(slot) : null"
+              >
+                <div class="slot-time">{{ slot.time }}</div>
+                <span v-if="slot.status === 'SCHEDULED' && slot.lesson.booked" class="status-booked">
+                  <i class="pi pi-user"></i> Занято
+                </span>
+                <span v-else-if="slot.status === 'COMPLETED'" class="status-completed">
+                  <i class="pi pi-check-circle"></i> Завершено
+                </span>
+                <span v-else-if="slot.status === 'IN_PROGRESS'" class="status-in-progress">
+                  <i class="pi pi-check-circle"></i> Проводиться
+                </span>
+                <span v-else class="status-available">
+                  <i class="pi pi-check"></i> Свободно
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Настройки дня для учителей и админов -->
+          <div v-if="isTeacher || isLocalTeacher || isAdmin" class="day-settings-section">
+            <h4>Настройки дня</h4>
+
+            <!-- Переключатель активности дня -->
+            <div class="activation-toggle">
+              <label class="toggle-label">
+                <input type="checkbox" :checked="daySettings.isActive" @change="toggleDayActivity" />
+                <span class="toggle-text">Отметить день как рабочий</span>
+              </label>
+            </div>
+
+            <!-- Настройки времени (только если день активен) -->
+            <div v-if="daySettings.isActive" class="time-settings">
+              <h5>Рабочие часы</h5>
+
+              <div class="time-range">
+                <div class="time-input-group">
+                  <label>Начало работы</label>
+                  <input type="time" v-model="daySettings.startTime" class="time-input" />
+                </div>
+
+                <div class="time-input-group">
+                  <label>Конец работы</label>
+                  <input type="time" v-model="daySettings.endTime" class="time-input" />
+                </div>
+              </div>
+
+              <Button
+                label="Создать урок"
+                icon="pi pi-plus"
+                @click="openCreateLessonDialog"
+                outlined
+                class="action-button"
+              />
+            </div>
+
+            <!-- Кнопки действий -->
+            <div class="settings-actions">
+              <Button label="Сохранить" @click="saveDaySettings" class="save-btn" />
+              <Button label="Отмена" severity="secondary" @click="cancelDaySettings" class="cancel-btn" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Сообщение о выборе дня -->
+        <div v-else class="select-day-message">
+          <div class="message-content">
+            <i class="pi pi-calendar message-icon"></i>
+            <h3>{{ isTeacher ? 'Выберите день' : 'Выберите рабочий день' }}</h3>
+            <p>{{ isTeacher ? 'Нажмите на любой день в календаре, чтобы управлять расписанием' : 'Нажмите на любой рабочий день в календаре, чтобы увидеть доступное время' }}</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Сообщение о выборе преподавателя -->
+      <div v-if="showTeacherPicker && !selectedTeacher" class="select-teacher-message">
+        <div class="message-content">
+          <i class="pi pi-users message-icon"></i>
+          <h3>Выберите преподавателя</h3>
+          <p>Для просмотра расписания выберите преподавателя из списка выше</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Диалог подтверждения бронирования -->
+    <BookingLessonDialog
+      v-model:visible="bookingDialog"
+      :slot="selectedSlot"
+      :date="selectedDate"
+      :loading="bookingLoading"
+      :lesson-types="lessonTypes"
+      :language-options="languageOptions"
+      @confirm="confirmBooking"
+      @cancel="cancelBooking"
+      @delete="deleteLesson"
+    />
+
+    <!-- Диалог создания урока -->
+    <CreateLessonDialog
+      v-model:visible="createLessonDialog"
+      :lesson="newLesson"
+      :session="newSession"
+      :lesson-types="lessonTypes"
+      :language-options="languageOptions"
+      :day-settings="daySettings"
+      :selected-date="selectedDate"
+      @save="lessonCreate"
+      @update:session="updateSession"
+    />
+  </div>
+</template>
+
+<script lang="ts">
+import { defineComponent, ref } from 'vue'
+import Button from 'primevue/button'
+import Dropdown from 'primevue/dropdown'
+import { useUserStore } from '@/stores/user'
+import { calendarApi } from '@/services/api/calendar'
+import { teachersApi } from '@/services/api/teachers'
+import { adminApi } from '@/services/api/admin'
+import { lessonsApi } from '@/services/api/lessons'
+import { languagesApi } from '@/services/api/languages'
+import axios from 'axios'
+import type { CalendarResponse, TimeSlotResponse } from '@/types/calendar'
+import type { Teacher } from '@/types/teacher'
+import type { LessonSessionResponse } from '@/types/lessons'
+import { useUiStore } from '@/stores/ui'
+import BookingLessonDialog from '@/components/dialogs/BookingLessonDialog.vue'
+import CreateLessonDialog from '@/components/dialogs/CreateLessonDialog.vue'
+
+export default defineComponent({
+  name: 'CalendarViewPage',
+  components: { Button, Dropdown, BookingLessonDialog, CreateLessonDialog },
+  data() {
+    return {
+			currentUser: '',
+      userStore: useUserStore(),
+      ui: useUiStore(),
+      selectedTeacher: null as Teacher | null,
+      selectedDate: null as Date | null,
+      bookingDialog: false,
+      bookingLoading: false,
+      selectedSlot: null as TimeSlotResponse | null,
+      daySettings: {
+        isActive: false,
+        startTime: '09:00',
+        endTime: '18:00',
+        bookedSlots: [] as string[],
+        lessons: [] as any[]
+      },
+      loading: false,
+      calendarData: null as CalendarResponse | null,
+      teachers: [] as Teacher[],
+      teachersLoading: true, // Начинаем с true, чтобы показывать индикатор загрузки
+      availableSlots: [] as TimeSlotResponse[],
+      currentDate: new Date(),
+      dayNames: ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'] as string[],
+      createLessonDialog: false,
+      newLesson: {
+        title: "",
+        lesson_type: null,
+        language: "",
+        level: "",
+        description: ""
+      },
+      newSession: {
+        start_time: null,
+        end_time: null
+      },
+      lessonTypes: [
+        { label: "Индивидуальный", value: "INDIVIDUAL" },
+        { label: "Групповой", value: "GROUP" },
+        { label: "Пробный", value: "TRIAL" }
+      ],
+      languageOptions: [] as Array<{ label: string; value: string }>
+    }
+  },
+  computed: {
+    showTeacherPicker(): boolean {
+      const u = this.currentUser as { role?: string } | '' | null | undefined
+      const isStudent = typeof u === 'object' && u != null && u.role === 'Студент'
+      return isStudent || this.isAdmin
+    },
+    /** Локальный вход (server.js): роль на русском */
+    isLocalTeacher(): boolean {
+      const u = this.currentUser as { role?: string } | '' | null | undefined
+      return typeof u === 'object' && u != null && u.role === 'Учитель'
+    },
+    /** Показывать сетку календаря и настройки дня */
+    showCalendarGrid(): boolean {
+      return this.isLocalTeacher || this.isTeacher
+    },
+    isTeacher(): boolean {
+      return this.userStore.isTeacher
+    },
+    isAdmin(): boolean {
+      return this.userStore.isAdmin
+    },
+    currentMonth(): number {
+      return this.currentDate.getMonth()
+    },
+    currentYear(): number {
+      return this.currentDate.getFullYear()
+    },
+    currentMonthName(): string {
+      const months = [
+        'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+        'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+      ]
+      return months[this.currentMonth]
+    },
+    calendarDays(): Array<{
+      date: Date; dayNumber: number; otherMonth: boolean; isToday: boolean; isWeekend: boolean; isWorkDay: boolean; hasEvents: boolean; key: string
+    }> {
+      const days: Array<{
+        date: Date; dayNumber: number; otherMonth: boolean; isToday: boolean; isWeekend: boolean; isWorkDay: boolean; hasEvents: boolean; key: string
+      }> = []
+      const today = new Date()
+
+      const firstDay = new Date(this.currentYear, this.currentMonth, 1)
+      const lastDay = new Date(this.currentYear, this.currentMonth + 1, 0)
+
+      let firstDayOfWeek = firstDay.getDay()
+      firstDayOfWeek = firstDayOfWeek === 0 ? 6 : firstDayOfWeek - 1
+
+      for (let i = firstDayOfWeek - 1; i >= 0; i--) {
+        const date = new Date(this.currentYear, this.currentMonth, -i, 12, 0, 0)
+        let isWorkDay = false
+        if (this.isTeacher || this.isLocalTeacher || this.selectedTeacher) {
+          if (this.calendarData) {
+            const dayData = this.calendarData.days.find(d => new Date(d.date).toDateString() === date.toDateString())
+            isWorkDay = dayData?.is_active || false
+          }
+        }
+        let dayData = this.calendarData?.days.find(d => new Date(d.date).toDateString() === date.toDateString());
+        days.push({
+          date,
+          dayNumber: date.getDate(),
+          otherMonth: true,
+          isToday: this.isSameDay(date, today),
+          isWeekend: date.getDay() === 0 || date.getDay() === 6,
+          isWorkDay,
+          hasEvents: (dayData?.lessons?.length || 0) > 0,
+          key: `prev-${date.getTime()}`
+        })
+      }
+
+      for (let day = 1; day <= lastDay.getDate(); day++) {
+        const date = new Date(this.currentYear, this.currentMonth, day, 12, 0, 0)
+        let isWorkDay = false
+        if (this.isTeacher || this.isLocalTeacher || this.selectedTeacher) {
+          if (this.calendarData) {
+            const dayData = this.calendarData.days.find(d => new Date(d.date).toDateString() === date.toDateString())
+            isWorkDay = dayData?.is_active || false
+          }
+        }
+        let dayData = this.calendarData?.days.find(d => new Date(d.date).toDateString() === date.toDateString());
+        days.push({
+          date,
+          dayNumber: day,
+          otherMonth: false,
+          isToday: this.isSameDay(date, today),
+          isWeekend: date.getDay() === 0 || date.getDay() === 6,
+          isWorkDay,
+          hasEvents: (dayData?.lessons?.length || 0) > 0,
+          key: `current-${date.getTime()}`
+        })
+      }
+
+      const remainingDays = 42 - days.length
+      for (let day = 1; day <= remainingDays; day++) {
+        const date = new Date(this.currentYear, this.currentMonth + 1, day, 12, 0, 0)
+        let isWorkDay = false
+        if (this.isTeacher || this.isLocalTeacher || this.selectedTeacher) {
+          if (this.calendarData) {
+            const dayData = this.calendarData.days.find(d => new Date(d.date).toDateString() === date.toDateString())
+            isWorkDay = dayData?.is_active || false
+          }
+        }
+        let dayData = this.calendarData?.days.find(d => new Date(d.date).toDateString() === date.toDateString());
+        days.push({
+          date,
+          dayNumber: date.getDate(),
+          otherMonth: true,
+          isToday: this.isSameDay(date, today),
+          isWeekend: date.getDay() === 0 || date.getDay() === 6,
+          isWorkDay,
+          hasEvents: (dayData?.lessons?.length || 0) > 0,
+          key: `next-${date.getTime()}`
+        })
+      }
+      return days
+    }
+  },
+  methods: {
+		async	checkAuth() {
+      const token = localStorage.getItem('token');
+      const user = localStorage.getItem('user');
+      if(token && user){
+				this.currentUser = JSON.parse(user);
+        this.isAuthenticated = true;
+        console.log(this.currentUser)
+			}
+        
+      
+    },
+    async loadTeachers() {
+      this.teachersLoading = true
+      this.ui.showLoading('Загрузка преподавателей...')
+      try {
+        console.log('[Calendar] Loading teachers from API...')
+        console.log('[Calendar] User role:', this.userStore.userRole)
+        console.log('[Calendar] Is admin:', this.isAdmin)
+
+        let teachersData: any
+
+        // Для админа используем endpoint /auth/users?role=teacher
+        // который возвращает всех пользователей с ролью teacher из auth-service
+        if (this.isAdmin) {
+          console.log('[Calendar] Loading teachers as admin via adminApi.getUsers("teacher")...')
+          const usersWithTeacherRole = await adminApi.getUsers('teacher')
+          console.log('[Calendar] Users with teacher role:', usersWithTeacherRole)
+
+          // Преобразуем пользователей в формат Teacher
+          teachersData = usersWithTeacherRole.map((user: any) => ({
+            id: user.id,
+            telegram_id: user.telegram_id,
+            full_name: user.full_name,
+            username: user.username,
+            // Дополнительные поля могут быть пустыми, так как они из auth-service
+            bio: null,
+            specialization: null,
+            experience_years: 0,
+            education: null,
+            certificates: [],
+            hourly_rate: null
+          }))
+        } else {
+          // Для обычных пользователей используем teachersApi
+          // который возвращает учителей из teachers-service
+          console.log('[Calendar] Loading teachers via teachersApi.getTeachers()...')
+          teachersData = await teachersApi.getTeachers()
+        }
+
+        console.log('[Calendar] Raw teachers response:', teachersData)
+        console.log('[Calendar] Response type:', typeof teachersData)
+        console.log('[Calendar] Is array:', Array.isArray(teachersData))
+
+        // Проверяем формат ответа
+        if (Array.isArray(teachersData)) {
+          this.teachers = teachersData
+          console.log('[Calendar] Teachers array length:', teachersData.length)
+          if (teachersData.length > 0) {
+            console.log('[Calendar] First teacher sample:', teachersData[0])
+          }
+        } else if (teachersData && typeof teachersData === 'object' && 'teachers' in teachersData && Array.isArray((teachersData as any).teachers)) {
+          this.teachers = (teachersData as any).teachers
+          console.log('[Calendar] Teachers from nested object, length:', (teachersData as any).teachers.length)
+        } else if (teachersData && typeof teachersData === 'object' && 'data' in teachersData && Array.isArray((teachersData as any).data)) {
+          this.teachers = (teachersData as any).data
+          console.log('[Calendar] Teachers from data field, length:', (teachersData as any).data.length)
+        } else {
+          console.warn('[Calendar] Unexpected teachers data format:', teachersData)
+          this.teachers = []
+        }
+
+        if (this.teachers.length === 0) {
+          console.warn('[Calendar] No teachers found')
+          if (this.isAdmin) {
+            console.warn('[Calendar] Admin: No users with teacher role found in auth-service')
+          } else {
+            console.warn('[Calendar] No teachers found in teachers-service database')
+          }
+          // Не показываем toast, так как это нормальная ситуация
+          // Просто скрываем select для выбора преподавателя
+        } else {
+          console.log('[Calendar] Successfully loaded', this.teachers.length, 'teachers')
+          console.log('[Calendar] Teachers list:', this.teachers.map(t => ({
+            id: t.id,
+            telegram_id: t.telegram_id,
+            full_name: t.full_name || 'No name'
+          })))
+        }
+      } catch (error: any) {
+        console.error('[Calendar] Ошибка загрузки преподавателей:', error)
+        console.error('[Calendar] Error details:', {
+          message: error?.message,
+          response: error?.response?.data,
+          status: error?.response?.status,
+          code: error?.code
+        })
+
+        const errorMessage = error?.response?.data?.detail ||
+                           error?.message ||
+                           'Ошибка загрузки списка преподавателей'
+
+        this.$toast.add({
+          severity: 'error',
+          summary: 'Ошибка',
+          detail: errorMessage,
+          life: 5000
+        })
+
+        // В dev режиме не очищаем массив, чтобы можно было тестировать
+        const isDevMode = import.meta.env.VITE_APP_MODE === 'dev'
+        if (!isDevMode) {
+          this.teachers = []
+        }
+      } finally {
+        this.teachersLoading = false
+        this.ui.hideLoading()
+      }
+    },
+    async loadCalendarData() {
+      if (!this.isTeacher && !this.isLocalTeacher && !this.selectedTeacher) {
+        console.log('[Calendar] Skipping loadCalendarData: isTeacher=', this.isTeacher, 'isLocalTeacher=', this.isLocalTeacher, 'selectedTeacher=', this.selectedTeacher)
+        return
+      }
+      this.loading = true
+      this.ui.showLoading('Загрузка календаря...')
+      try {
+        let teacherTelegramId: number | undefined
+        if (this.isTeacher) {
+          console.log('[Calendar] Loading calendar for teacher, userData:', this.userStore.userData)
+          teacherTelegramId = this.userStore.userData?.telegram_id
+          console.log('[Calendar] Teacher telegram_id:', teacherTelegramId)
+          if (!teacherTelegramId) {
+            console.error('[Calendar] Teacher telegram_id is missing! userData:', this.userStore.userData)
+            this.$toast.add({
+              severity: 'error',
+              summary: 'Ошибка',
+              detail: 'Не удалось определить ID преподавателя. Пожалуйста, обновите страницу.',
+              life: 5000
+            })
+            return
+          }
+        } else if (this.isLocalTeacher) {
+          const u = this.currentUser as { telegram_id?: number; id?: number }
+          teacherTelegramId = u?.telegram_id ?? u?.id
+          if (!teacherTelegramId) {
+            this.$toast.add({
+              severity: 'warn',
+              summary: 'Календарь',
+              detail: 'Для расписания нужен id или telegram_id пользователя (локальный вход).',
+              life: 6000
+            })
+            return
+          }
+        } else if (this.selectedTeacher) {
+          teacherTelegramId = (this.selectedTeacher as any).telegram_id
+          console.log('[Calendar] Loading calendar for selected teacher, telegram_id:', teacherTelegramId)
+        }
+        if (!teacherTelegramId) {
+          console.error('[Calendar] No teacher telegram_id available')
+          return
+        }
+        const startDate = new Date(this.currentYear, this.currentMonth, 1)
+        const endDate = new Date(this.currentYear, this.currentMonth + 2, 0)
+        console.log('[Calendar] Fetching calendar data for teacher:', teacherTelegramId, 'from', startDate.toISOString().split('T')[0], 'to', endDate.toISOString().split('T')[0])
+        this.calendarData = await calendarApi.getTeacherFullSchedule(
+          teacherTelegramId,
+          startDate.toISOString().split('T')[0],
+          endDate.toISOString().split('T')[0]
+        )
+        console.log('[Calendar] Calendar data loaded:', this.calendarData)
+      } catch (error: any) {
+        console.error('[Calendar] Error loading calendar:', error)
+        this.$toast.add({ severity: 'error', summary: 'Ошибка', detail: `Ошибка загрузки календаря: ${error?.message || error}`, life: 5000 })
+      } finally {
+        this.loading = false
+        this.ui.hideLoading()
+      }
+    },
+    async onTeacherChange() {
+      this.selectedDate = null
+      if (this.selectedTeacher) {
+        await this.loadCalendarData()
+      }
+    },
+    isSameDay(date1: Date, date2: Date) {
+      return date1.getDate() === date2.getDate() &&
+             date1.getMonth() === date2.getMonth() &&
+             date1.getFullYear() === date2.getFullYear()
+    },
+    selectDate(day: any) {
+      if (day.otherMonth) return
+      if (!this.isTeacher && !this.isLocalTeacher && !this.isAdmin && !day.isWorkDay) return
+
+      this.selectedDate = day.date
+
+      const dayData = this.calendarData?.days.find(d =>
+        new Date(d.date).toDateString() === day.date.toDateString()
+      )
+
+      if (dayData) {
+        this.daySettings = {
+          isActive: dayData.is_active,
+          startTime: dayData.start_time || '09:00',
+          endTime: dayData.end_time || '18:00',
+          lessons: dayData.lessons || []
+        }
+      } else {
+        this.daySettings = {
+          isActive: day.isWorkDay || false,
+          startTime: '09:00',
+          endTime: '18:00',
+          lessons: []
+        }
+      }
+
+      this.availableSlots = dayData?.lessons?.map((s: LessonSessionResponse) => {
+        const start = new Date(s.start_time)
+        const end = new Date(s.end_time)
+
+        return {
+          time: `${start.getHours().toString().padStart(2,'0')}:${start.getMinutes().toString().padStart(2,'0')}` +
+                `-${end.getHours().toString().padStart(2,'0')}:${end.getMinutes().toString().padStart(2,'0')}`,
+          status: s.status,
+          teacher: this.selectedTeacher || this.userStore.userData,
+          lesson: s.lesson ? { ...s.lesson, booked: s.booked, booked_by: s.booked_by } : undefined,
+          raw: s
+        }
+      }) || []
+    },
+    formatSelectedDate(date: Date) {
+      return date.toLocaleDateString('ru-RU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+    },
+    getDayDescription(date: Date) {
+      const today = new Date()
+      if (this.isSameDay(date, today)) return 'Сегодня'
+      const tomorrow = new Date(today)
+      tomorrow.setDate(tomorrow.getDate() + 1)
+      if (this.isSameDay(date, tomorrow)) return 'Завтра'
+      return ''
+    },
+    bookSlot(slot: TimeSlotResponse) {
+      if (
+        !this.isTeacher &&
+        !this.isAdmin &&
+        slot.lesson?.booked &&
+        slot.lesson.booked_by?.id !== this.userStore.userData?.id
+      ) {
+        this.$toast.add({
+          severity: 'warn',
+          summary: 'Занято',
+          detail: 'Это время уже занято другим студентом',
+          life: 3000
+        })
+        return
+      }
+
+      this.selectedSlot = slot
+      this.bookingDialog = true
+    },
+    async confirmBooking() {
+      this.bookingLoading = true
+      this.ui.showLoading('Подтверждение записи...')
+      try {
+        if (!this.selectedSlot) {
+          throw new Error('Не выбран слот для записи')
+        }
+
+        // Получаем lesson_id из выбранного слота
+        const lessonId = this.selectedSlot.raw.lesson_id
+        if (!lessonId) {
+          throw new Error('Не удалось определить урок для записи')
+        }
+
+        // Получаем student_id из текущего пользователя
+        const studentId = this.userStore.userData?.id
+        if (!studentId) {
+          throw new Error('Пользователь не авторизован')
+        }
+
+        // Вызываем API для записи на занятие
+        await lessonsApi.enroll({
+          lesson_id: lessonId,
+          student_id: studentId
+        })
+
+        this.bookingDialog = false
+        if (this.selectedSlot) {
+          const slot = this.availableSlots.find((s) => s.time === this.selectedSlot!.time)
+          if (slot) {
+            slot.lesson.booked = true
+            slot.lesson.booked_by = {
+              type: 'student',
+              id: this.userStore.userData?.id || 0,
+              name: this.userStore.userData?.full_name || 'Неизвестный'
+            }
+          }
+        }
+
+        this.selectedSlot = null
+        this.$toast.add({
+          severity: 'success',
+          summary: 'Готово',
+          detail: 'Вы успешно записаны на занятие',
+          life: 3000
+        })
+
+        await this.loadCalendarData()
+
+      } catch (error: any) {
+        console.error('Ошибка записи на занятие:', error)
+        let errorMessage = 'Не удалось записаться на занятие'
+
+        if (error.response?.data?.detail) {
+          errorMessage = error.response.data.detail
+        } else if (error.message) {
+          errorMessage = error.message
+        }
+
+        this.$toast.add({
+          severity: 'error',
+          summary: 'Ошибка',
+          detail: errorMessage,
+          life: 5000
+        })
+      } finally {
+        this.bookingLoading = false
+        this.ui.hideLoading()
+      }
+    },
+    async cancelBooking() {
+      if (!this.selectedSlot || !this.selectedSlot.raw.lesson_id) {
+        this.$toast.add({
+          severity: 'error',
+          summary: 'Ошибка',
+          detail: 'Не удалось определить занятие для отмены',
+          life: 4000
+        })
+        return
+      }
+
+      const lessonId = this.selectedSlot.raw.lesson_id
+      const bookedBy = this.selectedSlot.lesson?.booked_by
+
+      if (!bookedBy) {
+        this.$toast.add({
+          severity: 'error',
+          summary: 'Ошибка',
+          detail: 'Нет информации о пользователе, записанном на урок',
+          life: 4000
+        })
+        return
+      }
+
+      this.bookingLoading = true
+      this.ui.showLoading('Отмена записи...')
+
+      try {
+        if (bookedBy.type === 'student') {
+          await lessonsApi.removeStudent(lessonId, bookedBy.id)
+        } else if (bookedBy.type === 'group') {
+          await lessonsApi.removeGroup(lessonId, bookedBy.id)
+        } else {
+          throw new Error('Неизвестный тип участника')
+        }
+
+        this.$toast.add({
+          severity: 'success',
+          summary: 'Запись отменена',
+          detail: `${bookedBy.type === 'student' ? 'Студент' : 'Группа'} успешно удален(а) из занятия`,
+          life: 3000
+        })
+
+        if (this.selectedSlot) {
+          this.selectedSlot.lesson.booked = false
+          this.selectedSlot.lesson.booked_by = null
+        }
+
+        this.bookingDialog = false
+        this.selectedSlot = null
+
+        await this.loadCalendarData()
+        this.selectDate({ date: this.selectedDate })
+      } catch (error: any) {
+        console.error('Ошибка при отмене записи:', error)
+        this.$toast.add({
+          severity: 'error',
+          summary: 'Ошибка',
+          detail: error?.response?.data?.detail || error.message || 'Не удалось отменить запись',
+          life: 5000
+        })
+      } finally {
+        this.bookingLoading = false
+        this.ui.hideLoading()
+      }
+    },
+    toggleDayActivity() {
+      this.daySettings.isActive = !this.daySettings.isActive
+    },
+    async saveDaySettings() {
+      this.ui.showLoading('Сохранение настроек...')
+      try {
+        let teacherTelegramId: number | undefined
+        if (this.isTeacher) {
+          teacherTelegramId = this.userStore.userData?.telegram_id
+        } else if (this.isLocalTeacher) {
+          const u = this.currentUser as { telegram_id?: number; id?: number }
+          teacherTelegramId = u?.telegram_id ?? u?.id
+        } else if (this.isAdmin && this.selectedTeacher) {
+          teacherTelegramId = (this.selectedTeacher as any).telegram_id
+        }
+        if (!teacherTelegramId || !this.selectedDate) {
+          this.$toast.add({ severity: 'error', summary: 'Ошибка', detail: 'Не удалось определить преподавателя или дату', life: 5000 })
+          return
+        }
+
+        const scheduleDate = this.selectedDate.toISOString().split('T')[0]
+        const existingDays = await calendarApi.getTeacherSpecialDays(
+          teacherTelegramId,
+          scheduleDate,
+          scheduleDate
+        )
+        const existingDay = existingDays.find(d => d.date === scheduleDate)
+
+        if (!this.daySettings.isActive) {
+          if (existingDay) {
+            await calendarApi.deleteTeacherSpecialDay(existingDay.id)
+          }
+          this.$toast.add({ severity: 'success', summary: 'Сохранено', detail: 'День снят с особого расписания', life: 3000 })
+          await this.loadCalendarData()
+          this.refreshSelectedDay()
+          return
+        }
+
+        const updatePayload = {
+          start_time: this.daySettings.startTime,
+          end_time: this.daySettings.endTime,
+        }
+
+        if (existingDay) {
+          await calendarApi.updateTeacherSpecialDay(existingDay.id, {
+            teacher_telegram_id: teacherTelegramId,
+            date: scheduleDate,
+            ...updatePayload,
+          })
+        } else {
+          await calendarApi.createTeacherSpecialDay({
+            teacher_telegram_id: teacherTelegramId,
+            date: scheduleDate,
+            start_time: this.daySettings.startTime,
+            end_time: this.daySettings.endTime,
+          })
+        }
+
+        this.$toast.add({ severity: 'success', summary: 'Сохранено', detail: 'Настройки дня сохранены', life: 3000 })
+        await this.loadCalendarData()
+        this.refreshSelectedDay()
+      } catch (error: any) {
+        console.error('Ошибка при сохранении настроек:', error)
+        const detail = error?.response?.data?.detail || error?.response?.data?.message || error?.message || 'Ошибка при сохранении настроек'
+        this.$toast.add({ severity: 'error', summary: 'Ошибка', detail: String(detail), life: 5000 })
+      } finally {
+        this.ui.hideLoading()
+      }
+    },
+    /** Перечитать панель выбранного дня после изменения календаря */
+    refreshSelectedDay() {
+      if (!this.selectedDate) return
+      const d = this.calendarDays.find(
+        (x) => !x.otherMonth && this.isSameDay(x.date, this.selectedDate as Date)
+      )
+      if (d) this.selectDate(d)
+    },
+    async goToPreviousMonth() {
+      const d = new Date(this.currentDate)
+      d.setMonth(d.getMonth() - 1)
+      this.currentDate = d
+      this.selectedDate = null
+      await this.loadCalendarData()
+    },
+    async goToNextMonth() {
+      const d = new Date(this.currentDate)
+      d.setMonth(d.getMonth() + 1)
+      this.currentDate = d
+      this.selectedDate = null
+      await this.loadCalendarData()
+    },
+    async cancelDaySettings() {
+      if (!this.selectedDate) return
+      try {
+        let teacherTelegramId: number | undefined
+        if (this.isTeacher) {
+          teacherTelegramId = this.userStore.userData?.telegram_id
+        } else if (this.isLocalTeacher) {
+          const u = this.currentUser as { telegram_id?: number; id?: number }
+          teacherTelegramId = u?.telegram_id ?? u?.id
+        } else if (this.isAdmin && this.selectedTeacher) {
+          teacherTelegramId = (this.selectedTeacher as any).telegram_id
+        }
+        if (!teacherTelegramId) return
+
+        const scheduleDate = this.selectedDate.toISOString().split('T')[0]
+        const existingDays = await calendarApi.getTeacherSpecialDays(
+          teacherTelegramId,
+          scheduleDate,
+          scheduleDate
+        )
+        const existing = existingDays.find((d) => d.date === scheduleDate)
+        const dayData = this.calendarData?.days.find(
+          (d) => new Date(d.date).toDateString() === this.selectedDate!.toDateString()
+        )
+
+        const normTime = (t: string | undefined, fallback: string) => {
+          const s = (t || fallback).toString()
+          return s.length >= 5 ? s.slice(0, 5) : fallback
+        }
+
+        if (existing) {
+          this.daySettings = {
+            isActive: true,
+            startTime: normTime(existing.start_time, '09:00'),
+            endTime: normTime(existing.end_time, '18:00'),
+            bookedSlots: this.daySettings.bookedSlots || [],
+            lessons: dayData?.lessons || [],
+          }
+        } else if (dayData) {
+          this.daySettings = {
+            isActive: !!dayData.is_active,
+            startTime: normTime(dayData.start_time, '09:00'),
+            endTime: normTime(dayData.end_time, '18:00'),
+            bookedSlots: [],
+            lessons: dayData.lessons || [],
+          }
+        } else {
+          this.daySettings = {
+            isActive: false,
+            startTime: '09:00',
+            endTime: '18:00',
+            bookedSlots: [],
+            lessons: [],
+          }
+        }
+      } catch (error) {
+        console.error('Ошибка при отмене настроек:', error)
+        const day = this.calendarDays.find(
+          (d) => !d.otherMonth && this.selectedDate && this.isSameDay(d.date, this.selectedDate)
+        )
+        if (day) {
+          this.daySettings = {
+            isActive: day.isWorkDay,
+            startTime: '09:00',
+            endTime: '18:00',
+            bookedSlots: [],
+            lessons: [],
+          }
+        }
+      }
+    },
+    openCreateLessonDialog() {
+      if (!this.selectedDate) {
+        this.$toast.add({ severity: 'warn', summary: 'Дата', detail: 'Сначала выберите день в календаре', life: 3000 })
+        return
+      }
+      this.newLesson = {
+        title: '',
+        lesson_type: 'INDIVIDUAL' as string | null,
+        language: '',
+        level: '',
+        description: '',
+      }
+      this.newSession = { start_time: null, end_time: null }
+      this.createLessonDialog = true
+    },
+    updateSession(session: { start_time: Date | null; end_time: Date | null }) {
+      this.newSession.start_time = session.start_time
+      this.newSession.end_time = session.end_time
+    },
+    async createLesson() {
+      const teacherTelegramId = this.isTeacher
+        ? this.userStore.userData?.telegram_id
+        : this.isLocalTeacher
+          ? (() => {
+              const u = this.currentUser as { telegram_id?: number; id?: number }
+              return u?.telegram_id ?? u?.id
+            })()
+          : (this.selectedTeacher as { telegram_id?: number } | null)?.telegram_id
+
+      if (!teacherTelegramId) {
+        this.$toast.add({
+          severity: 'error',
+          summary: 'Ошибка',
+          detail: 'Не удалось определить преподавателя (telegram_id или id)',
+          life: 5000,
+        })
+        return
+      }
+
+      if (!this.newLesson.title?.trim()) {
+        this.$toast.add({ severity: 'warn', summary: 'Урок', detail: 'Укажите название урока', life: 4000 })
+        return
+      }
+      if (!this.newLesson.lesson_type) {
+        this.$toast.add({ severity: 'warn', summary: 'Урок', detail: 'Выберите тип урока', life: 4000 })
+        return
+      }
+      if (!this.newSession.start_time || !this.newSession.end_time || !this.selectedDate) {
+        this.$toast.add({ severity: 'warn', summary: 'Урок', detail: 'Укажите время начала и окончания', life: 4000 })
+        return
+      }
+
+      const date = this.selectedDate
+      const startDateTime = new Date(date)
+      startDateTime.setHours(this.newSession.start_time.getHours(), this.newSession.start_time.getMinutes(), 0, 0)
+
+      const endDateTime = new Date(date)
+      endDateTime.setHours(this.newSession.end_time.getHours(), this.newSession.end_time.getMinutes(), 0, 0)
+
+      if (endDateTime <= startDateTime) {
+        this.$toast.add({ severity: 'warn', summary: 'Время', detail: 'Окончание должно быть позже начала', life: 4000 })
+        return
+      }
+
+      const sd = this.selectedDate
+      const calendar_date = `${sd.getFullYear()}-${String(sd.getMonth() + 1).padStart(2, '0')}-${String(sd.getDate()).padStart(2, '0')}`
+
+      const payload = {
+        lesson: {
+          ...this.newLesson,
+          lesson_type: this.newLesson.lesson_type as 'INDIVIDUAL' | 'GROUP' | 'TRIAL',
+          teacher_telegram_id: teacherTelegramId,
+        },
+        session: {
+          start_time: startDateTime.toISOString(),
+          end_time: endDateTime.toISOString(),
+          calendar_date,
+        },
+        teacher_telegram_id: teacherTelegramId,
+      }
+
+      this.ui.showLoading('Создание урока...')
+      try {
+        // Как в Profile.saveProfile: прямой запрос к локальному server.js
+        await axios.post('http://localhost:3000/api/lessons/create-full-lesson', payload)
+        this.$toast.add({ severity: 'success', summary: 'Успех', detail: 'Урок создан', life: 3000 })
+        this.createLessonDialog = false
+        this.newLesson = {
+          title: '',
+          lesson_type: null,
+          language: '',
+          level: '',
+          description: '',
+        }
+        this.newSession = { start_time: null, end_time: null }
+        await this.loadCalendarData()
+        this.refreshSelectedDay()
+      } catch (error) {
+        const detail =
+          axios.isAxiosError?.(error) && error.response?.data && typeof error.response.data === 'object'
+            ? String(
+                (error.response.data as { error?: string }).error
+                  || (error.response.data as { detail?: string }).detail
+                  || 'Ошибка при создании урока'
+              )
+            : 'Ошибка при создании урока'
+        this.$toast.add({
+          severity: 'error',
+          summary: 'Ошибка',
+          detail,
+          life: 5000
+        })
+      } finally {
+        this.ui.hideLoading()
+      }
+    },
+		async lessonCreate(){
+			const teacherTelegramId = this.currentUser.id
+			const date = this.selectedDate
+      const startDateTime = new Date(date)
+      startDateTime.setHours(this.newSession.start_time.getHours(), this.newSession.start_time.getMinutes(), 0, 0)
+
+      const endDateTime = new Date(date)
+      endDateTime.setHours(this.newSession.end_time.getHours(), this.newSession.end_time.getMinutes(), 0, 0)
+
+      if (endDateTime <= startDateTime) {
+        this.$toast.add({ severity: 'warn', summary: 'Время', detail: 'Окончание должно быть позже начала', life: 4000 })
+        return
+      }
+
+      const sd = this.selectedDate
+      const calendar_date = `${sd.getFullYear()}-${String(sd.getMonth() + 1).padStart(2, '0')}-${String(sd.getDate()).padStart(2, '0')}`
+			const payload = {
+        lesson: {
+          ...this.newLesson,
+          lesson_type: this.newLesson.lesson_type as 'INDIVIDUAL' | 'GROUP' | 'TRIAL',
+          teacher_telegram_id: teacherTelegramId,
+        },
+        session: {
+          start_time: startDateTime.toISOString(),
+          end_time: endDateTime.toISOString(),
+          calendar_date,
+        },
+        teacher_telegram_id: teacherTelegramId,
+      }
+
+      this.ui.showLoading('Создание урока...')
+      try {
+        // Как в Profile.saveProfile: прямой запрос к локальному server.js
+        await axios.post('http://localhost:3000/api/lessons/create-full-lesson', payload)
+        this.$toast.add({ severity: 'success', summary: 'Успех', detail: 'Урок создан', life: 3000 })
+        this.createLessonDialog = false
+        this.newLesson = {
+          title: '',
+          lesson_type: null,
+          language: '',
+          level: '',
+          description: '',
+        }
+        this.newSession = { start_time: null, end_time: null }
+        await this.loadCalendarData()
+        this.refreshSelectedDay()
+      } catch (error) {
+        const detail =
+          axios.isAxiosError?.(error) && error.response?.data && typeof error.response.data === 'object'
+            ? String(
+                (error.response.data as { error?: string }).error
+                  || (error.response.data as { detail?: string }).detail
+                  || 'Ошибка при создании урока'
+              )
+            : 'Ошибка при создании урока'
+        this.$toast.add({
+          severity: 'error',
+          summary: 'Ошибка',
+          detail,
+          life: 5000
+        })
+      } finally {
+        this.ui.hideLoading()
+      }
+
+		},
+    async deleteLesson() {
+      if (!this.selectedSlot || !this.selectedSlot.raw.lesson_id) {
+        this.$toast.add({
+          severity: 'error',
+          summary: 'Ошибка',
+          detail: 'Не удалось определить урок для удаления',
+          life: 4000
+        })
+        return
+      }
+
+      const lessonId = this.selectedSlot.raw.lesson_id
+
+      try {
+        this.ui.showLoading('Удаление урока...')
+        await lessonsApi.deleteFullLesson(lessonId)
+
+        this.$toast.add({
+          severity: 'success',
+          summary: 'Урок удалён',
+          detail: 'Урок и связанные сессии успешно удалены',
+          life: 3000
+        })
+
+        // закрываем диалог и обновляем календарь
+        this.bookingDialog = false
+        this.selectedSlot = null
+
+        await this.loadCalendarData()
+        this.selectDate({ date: this.selectedDate })
+
+      } catch (error: any) {
+        console.error('Ошибка при удалении урока:', error)
+        this.$toast.add({
+          severity: 'error',
+          summary: 'Ошибка',
+          detail: error?.response?.data?.detail || error.message || 'Не удалось удалить урок',
+          life: 5000
+        })
+      } finally {
+        this.ui.hideLoading()
+      }
+    },
+    formatTime(date: Date) {
+      const hours = date.getHours().toString().padStart(2, '0')
+      const minutes = date.getMinutes().toString().padStart(2, '0')
+      return `${hours}:${minutes}`
+    },
+    async loadLanguages() {
+      try {
+        const languages = await languagesApi.getLanguages(true) // только активные
+        this.languageOptions = languages.map(lang => ({
+          label: lang.name,
+          value: lang.code
+        }))
+      } catch (error) {
+        console.error('Failed to load languages:', error)
+        this.languageOptions = []
+      }
+    }
+  },
+  async mounted() {
+    await this.checkAuth()
+
+    if (!this.userStore.isInitialized) {
+      await this.userStore.initialize()
+    }
+
+    if (this.userStore.hasToken && !this.userStore.userData) {
+      await this.userStore.fetchCurrentUser()
+    }
+
+    if (this.isAdmin) {
+      await this.loadTeachers()
+    }
+
+    await this.loadLanguages()
+
+    if (this.isTeacher) {
+      if (this.userStore.userData?.telegram_id) {
+        await this.loadCalendarData()
+      } else {
+        console.warn('[Calendar] Teacher userData or telegram_id is missing, cannot load calendar')
+      }
+    } else if (this.isLocalTeacher) {
+      const u = this.currentUser as { telegram_id?: number; id?: number }
+      if (u?.telegram_id ?? u?.id) {
+        await this.loadCalendarData()
+      } else {
+        console.warn('[Calendar] Local teacher: нет telegram_id и id, календарь недоступен')
+      }
+    } else if (this.selectedTeacher) {
+      await this.loadCalendarData()
+    }
+  }
+})
+</script>
+
+<style scoped>
+.calendar-page {
+  min-height: 100vh;
+  background: var(--surface-ground);
+}
+
+.main-content {
+  padding: 1rem;
+  max-width: 1200px;
+  margin: 0 auto;
+	display: flex;
+  flex-direction: column;
+	align-items: center;
+}
+
+.page-header {
+  text-align: center;
+  margin-bottom: 2rem;
+  padding: 2rem 0;
+}
+
+.page-header h1 {
+  font-size: 2rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+  color: var(--text-color);
+}
+
+.page-header p {
+  font-size: 1.125rem;
+  color: var(--text-color-secondary);
+  margin: 0;
+}
+
+.teacher-selection {
+  background: var(--surface-card);
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.teacher-selector {
+  display: flex;
+  flex-direction: column;
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.teacher-selector label {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--text-color);
+  text-align: center;
+}
+
+.teacher-dropdown {
+  width: 100%;
+}
+
+.loading-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  color: var(--text-color-secondary);
+  font-size: 0.875rem;
+}
+
+.loading-indicator i {
+  font-size: 1rem;
+}
+
+.empty-state {
+  margin-top: 0.5rem;
+  text-align: center;
+  color: var(--text-color-secondary);
+  font-size: 0.875rem;
+  padding: 0.5rem;
+  background: var(--surface-section);
+  border-radius: 8px;
+}
+
+.calendar-container {
+  background: var(--surface-card);
+  border-radius: 16px;
+  padding: 2rem;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+  margin-bottom: 2rem;
+	min-width: 60rem;
+}
+
+.calendar-navigation {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 2rem;
+}
+
+.month-selector {
+  text-align: center;
+}
+
+.month-nav-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.month-nav-row h2 {
+  margin: 0;
+  min-width: 12rem;
+}
+
+.month-selector h2 {
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin: 0 0 0.25rem 0;
+  color: var(--text-color);
+}
+
+.month-subtitle {
+  font-size: 0.875rem;
+  color: var(--text-color-secondary);
+  margin: 0;
+}
+
+.calendar-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.calendar-header {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0.5rem;
+}
+
+.day-header {
+  text-align: center;
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--text-color-secondary);
+  padding: 0.5rem;
+}
+
+.calendar-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0.5rem;
+}
+
+.calendar-day {
+  aspect-ratio: 1;
+  border-radius: 12px;
+  padding: 0.5rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid transparent;
+}
+
+.calendar-day:hover:not(.other-month) {
+  background: var(--surface-hover);
+  border-color: var(--primary-color);
+  transform: translateY(-2px);
+}
+
+.calendar-day.other-month {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.calendar-day.today {
+  background: var(--primary-color);
+  color: white;
+  font-weight: 600;
+}
+
+.calendar-day.today:hover {
+  background: var(--primary-600);
+}
+
+.calendar-day.weekend:not(.today) {
+  color: var(--red-500);
+}
+
+.calendar-day.non-work-day:not(.today) {
+  background: var(--surface-section);
+  opacity: 0.6;
+}
+
+.calendar-day.non-work-cursor-day:not(.today) {
+  cursor: not-allowed;
+}
+
+.calendar-day.selected:not(.today) {
+  background: var(--primary-100);
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+  font-weight: 600;
+}
+
+.day-number {
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.day-events {
+  position: absolute;
+  bottom: 0.25rem;
+  display: flex;
+  gap: 0.125rem;
+}
+
+.event-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--primary-color);
+}
+
+.calendar-day.today .event-dot {
+  background: white;
+}
+
+.day-settings-section {
+  margin-top: 1.5rem;
+  padding: 1.5rem;
+  background: var(--surface-section);
+  border-radius: 12px;
+  border: 1px solid var(--surface-border);
+}
+
+.activation-toggle {
+  margin-bottom: 1.5rem;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.toggle-label input[type="checkbox"] {
+  width: 1.25rem;
+  height: 1.25rem;
+  accent-color: var(--primary-color);
+}
+
+.toggle-text {
+  color: var(--text-color);
+}
+
+.time-settings {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--surface-border);
+}
+
+.time-settings h5 {
+  margin: 0 0 1rem 0;
+  color: var(--text-color);
+  font-size: 1rem;
+}
+
+.time-range {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.time-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.time-input-group label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-color-secondary);
+}
+
+.time-input {
+  padding: 0.5rem;
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  background: var(--surface-card);
+  color: var(--text-color);
+  font-size: 0.875rem;
+}
+
+.time-input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px var(--primary-100);
+}
+
+.booked-slots {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--surface-border);
+}
+
+.booked-slots h5 {
+  margin: 0 0 1rem 0;
+  color: var(--text-color);
+  font-size: 1rem;
+}
+
+.booked-slots-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.booked-slot {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--red-50);
+  border: 1px solid var(--red-200);
+  border-radius: 8px;
+  color: var(--red-700);
+  font-size: 0.875rem;
+}
+
+.remove-slot-btn {
+  background: none;
+  border: none;
+  color: var(--red-600);
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.remove-slot-btn:hover {
+  background: var(--red-100);
+}
+
+.settings-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--surface-border);
+}
+
+.save-btn {
+  flex: 1;
+}
+
+.cancel-btn {
+  flex: 1;
+}
+
+.selected-day-info {
+  margin-top: 2rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--surface-border);
+}
+
+.selected-day-header {
+  margin-bottom: 1.5rem;
+}
+
+.selected-day-header h3 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+  color: var(--text-color);
+}
+
+.day-description {
+  font-size: 1rem;
+  color: var(--primary-color);
+  font-weight: 500;
+  margin: 0;
+}
+
+.time-slots-section h4 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 1rem 0;
+  color: var(--text-color);
+}
+
+.time-slots-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 1rem;
+}
+
+.time-slot {
+  padding: 1rem;
+  border-radius: 8px;
+  border: 2px solid var(--surface-border);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+}
+
+.time-slot.available {
+  border-color: var(--green-300);
+  background: var(--green-50);
+}
+
+.time-slot.available:hover {
+  border-color: var(--green-400);
+  background: var(--green-100);
+  transform: translateY(-2px);
+}
+
+.time-slot.booked {
+  border-color: var(--red-300);
+  background: var(--red-50);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.time-slot.unavailable {
+  border-color: var(--surface-border);
+  background: var(--surface-section);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.slot-time {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--text-color);
+}
+
+.slot-status {
+  font-size: 0.875rem;
+}
+
+.status-available {
+  color: var(--green-600);
+}
+
+.status-booked {
+  color: var(--red-600);
+}
+
+.status-unavailable {
+  color: var(--text-color-secondary);
+}
+
+.slot-status i {
+  margin-right: 0.25rem;
+}
+
+.select-day-message {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 300px;
+}
+
+.select-teacher-message {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 400px;
+}
+
+.message-content {
+  text-align: center;
+  padding: 3rem;
+}
+
+.message-icon {
+  font-size: 4rem;
+  color: var(--primary-color);
+  margin-bottom: 1rem;
+}
+
+.message-content h3 {
+  margin: 0 0 1rem 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+.message-content p {
+  margin: 0;
+  color: var(--text-color-secondary);
+  font-size: 1.125rem;
+}
+
+.booking-details {
+  padding: 1rem 0;
+}
+
+.booking-info p {
+  margin: 0.5rem 0;
+  color: var(--text-color);
+}
+
+.booking-info strong {
+  color: var(--text-color);
+}
+
+.loading-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem;
+  text-align: center;
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid var(--surface-border);
+  border-top: 4px solid var(--primary-color);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 1rem;
+}
+
+.create-lesson-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding-top: 1.25rem;
+}
+
+.field{
+  margin-bottom: 1rem;
+}
+
+.action-button {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.loading-indicator p {
+  color: var(--text-color-secondary);
+  margin: 0;
+}
+
+@media (max-width: 768px) {
+  .main-content {
+    padding: 0.5rem;
+  }
+
+  .page-header h1 {
+    font-size: 1.75rem;
+  }
+
+  .calendar-container {
+    padding: 1rem;
+  }
+
+  .month-selector h2 {
+    font-size: 1.5rem;
+  }
+
+  .calendar-day {
+    padding: 0.25rem;
+  }
+
+  .day-number {
+    font-size: 0.875rem;
+  }
+
+  .time-slots-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  }
+}
+</style>
