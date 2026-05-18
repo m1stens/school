@@ -227,7 +227,7 @@ export default defineComponent({
   },
   data() {
     return {
-			currentUser: '',
+			currentUser: null,
       userStore: useUserStore(),
       router: useRouter(),
       editProfileDialog: false,
@@ -319,8 +319,9 @@ export default defineComponent({
 		 async	checkAuth() {
       const token = localStorage.getItem('token');
       const user = localStorage.getItem('user');
+			this.currentUser = JSON.parse(user);
       if(token && user){
-				this.currentUser = JSON.parse(user);
+				
         this.isAuthenticated = true;
         console.log(this.currentUser)
 			}
