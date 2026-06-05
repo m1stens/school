@@ -564,4 +564,15 @@ export default defineComponent({
     padding-bottom: 110px;
   }
 }
+
+@media (max-width: 480px) {
+	.nav-list1{
+		justify-content: center;
+		
+	}
+	.sidebar-header{
+		flex-direction: column;
+		gap: 1rem;
+	}
+}
 </style>

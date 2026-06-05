@@ -123,7 +123,7 @@
           </div>
 
           <!-- Настройки дня для учителей и админов -->
-          <div v-if="isTeacher || isLocalTeacher || isAdmin" class="day-settings-section">
+          <div v-if="!showTeacherPicker" class="day-settings-section">
             <h4>Настройки дня</h4>
 
             <!-- Переключатель активности дня -->
@@ -529,16 +529,6 @@ export default defineComponent({
           console.log('[Calendar] Loading calendar for teacher, userData:', this.userStore.userData)
           teacherTelegramId = this.userStore.userData?.telegram_id
           console.log('[Calendar] Teacher telegram_id:', teacherTelegramId)
-          if (!teacherTelegramId) {
-            console.error('[Calendar] Teacher telegram_id is missing! userData:', this.userStore.userData)
-            this.$toast.add({
-              severity: 'error',
-              summary: 'Ошибка',
-              detail: 'Не удалось определить ID преподавателя. Пожалуйста, обновите страницу.',
-              life: 5000
-            })
-            return
-          }
         } else if (this.isLocalTeacher) {
           const u = this.currentUser as { telegram_id?: number; id?: number }
           teacherTelegramId = u?.telegram_id ?? u?.id
@@ -1827,5 +1817,14 @@ export default defineComponent({
   .time-slots-grid {
     grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
   }
+}
+
+@media (max-width: 480px) {
+	.teacher-selection{
+		padding: 0.5rem;
+	}
+	.calendar-container{
+		min-width: 23rem;
+	}
 }
 </style>
