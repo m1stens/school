@@ -9,27 +9,7 @@
       </div>
 
       <!-- Выбор преподавателя (студенты и админы) -->
-      <div v-if="showTeacherPicker" class="teacher-selection">
-        <div class="teacher-selector">
-          <label for="teacher-select">Выберите преподавателя</label>
-          <Dropdown
-            
-            id="teacher-select"
-            v-model="selectedTeacher"
-            :options="teachers"
-            optionLabel="full_name"
-            placeholder="Выберите преподавателя для записи"
-            class="teacher-dropdown"
-            @change="onTeacherChange"
-          />
-          <div v-if="teachersLoading" class="loading-indicator">
-            <i class="pi pi-spin pi-spinner"></i> Загрузка преподавателей...
-          </div>
-          <div v-if="!teachersLoading && teachers.length === 0" class="empty-state">
-            Нет доступных преподавателей
-          </div>
-        </div>
-      </div>
+     
 
       <!-- Календарь: локальная роль «Учитель», JWT-роль teacher или админ с выбранным преподавателем -->
       <div v-if="showCalendarGrid" class="calendar-container">
@@ -123,7 +103,7 @@
           </div>
 
           <!-- Настройки дня для учителей и админов -->
-          <div v-if="!showTeacherPicker" class="day-settings-section">
+          <div v-if="isTeacher" class="day-settings-section">
             <h4>Настройки дня</h4>
 
             <!-- Переключатель активности дня -->

@@ -58,7 +58,7 @@ export const useUserStore = defineStore('user', () => {
     }
 
     // Если в токене нет роли, берем из данных пользователя
-    return user.value?.role || 'teacher';
+    return user.value?.role || 'student';
   });
 
   // Проверяем, является ли пользователь админом
